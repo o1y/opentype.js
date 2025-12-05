@@ -584,11 +584,15 @@ Path.prototype.toPathData = function(options) {
         let s = '';
         for (let i = 0; i < arguments.length; i += 1) {
             const v = arguments[i];
-            if (v >= 0 && i > 0) {
+            const floatStr = floatToString(v);
+            const rounded = roundDecimal(v, options.decimalPlaces);
+            const shouldAddSpace = rounded >= 0 && i > 0;
+
+            if (shouldAddSpace) {
                 s += ' ';
             }
 
-            s += floatToString(v);
+            s += floatStr;
         }
 
         return s;

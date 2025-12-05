@@ -181,6 +181,35 @@ describe('path.mjs', function() {
         assert.ok(result4.startsWith('M0 349'), 'Path should start with M0 349');
     });
 
+    it('should handle tiny negative floating-point values that round to zero with proper spacing', function() {
+        const path = new Path();
+        path.moveTo(199, 0.7);
+        path.quadraticCurveTo(206.3, 0.7, 11.5, -2.842170943040401e-14);
+        path.lineTo(184.23, -1.5e-15);
+        path.lineTo(150, 50);
+        path.close();
+
+        const result = path.toPathData({decimalPlaces: 2, flipY: false});
+
+        assert.ok(!result.match(/\.\d{3,}/), 'Should not have excessive decimal places indicating concatenation');
+        assert.ok(!result.match(/\.\d{2}[1-9]/), 'Decimal numbers should not be concatenated with following coordinates');
+        assert.ok(result.includes('11.50 0'), 'Should have space before 0 that was rounded from tiny negative');
+        assert.ok(result.includes('184.23 0'), 'Should have space before 0 that was rounded from tiny negative');
+        assert.equal(result, 'M199 0.70Q206.30 0.70 11.50 0L184.23 0L150 50Z');
+    });
+
+    it('should handle edge cases with multiple zero-valued coordinates', function() {
+        const path = new Path();
+        path.moveTo(100, 0);
+        path.lineTo(200, -1e-15);
+        path.lineTo(300, 0);
+        path.lineTo(400, 1e-15);
+
+        const result = path.toPathData({decimalPlaces: 2, flipY: false});
+
+        assert.equal(result, 'M100 0L200 0L300 0L400 0');
+    });
+
     afterEach(() => {
         delete global.document;
     });
