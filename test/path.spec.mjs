@@ -155,6 +155,32 @@ describe('path.mjs', function() {
         assert.equal(emptyPath.toDOMElement().getAttribute('fill'), undefined);
     });
     
+    it('should not return NaNs in paths due to floating-point precision issues', function() {
+        const path1 = new Path();
+        path1.moveTo(0, 349.00000000000006);
+        const result1 = path1.toPathData({decimalPlaces: 2, flipY: false});
+        assert.equal(result1, 'M0 349', 'Should round 349.00000000000006 to 349');
+        assert.ok(!result1.includes('NaN'), 'Path should not contain NaN');
+
+        const path2 = new Path();
+        path2.moveTo(0, 349.0060000000000);
+        const result2 = path2.toPathData({decimalPlaces: 2, flipY: false});
+        assert.equal(result2, 'M0 349.01', 'Should round 349.006 to 349.01');
+        assert.ok(!result2.includes('NaN'), 'Path should not contain NaN');
+
+        const path3 = new Path();
+        path3.moveTo(0, 349.060000000000);
+        const result3 = path3.toPathData({decimalPlaces: 2, flipY: false});
+        assert.equal(result3, 'M0 349.06', 'Should round 349.06 to 349.06');
+        assert.ok(!result3.includes('NaN'), 'Path should not contain NaN');
+
+        const path4 = new Path();
+        path4.moveTo(0, 349.00000000000006);
+        const result4 = path4.toPathData({decimalPlaces: 14, flipY: false});
+        assert.ok(!result4.includes('NaN'), 'Path should not contain NaN even with high precision');
+        assert.ok(result4.startsWith('M0 349'), 'Path should start with M0 349');
+    });
+
     afterEach(() => {
         delete global.document;
     });

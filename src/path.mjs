@@ -32,8 +32,14 @@ function roundDecimal(float, places) {
         const roundedDecimalPart = decimalRoundingCache[places][decimalPart];
         return integerPart + roundedDecimalPart;
     }
-    
-    const roundedDecimalPart = +(Math.round(decimalPart + 'e+' + places) + 'e-' + places);
+
+    let roundedDecimalPart = +(Math.round(decimalPart + 'e+' + places) + 'e-' + places);
+
+    if (isNaN(roundedDecimalPart)) {
+        const multiplier = Math.pow(10, places);
+        roundedDecimalPart = Math.round(decimalPart * multiplier) / multiplier;
+    }
+
     decimalRoundingCache[places][decimalPart] = roundedDecimalPart;
 
     return integerPart + roundedDecimalPart;
