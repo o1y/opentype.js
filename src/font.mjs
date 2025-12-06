@@ -389,9 +389,14 @@ Font.prototype.forEachGlyph = function(text, x, y, fontSize, options, callback) 
     }
     for (let i = 0; i < glyphs.length; i += 1) {
         const glyph = glyphs[i];
+        const transformedGlyph = this.variation
+            ? this.variation.getTransform(glyph, options.variation)
+            : glyph;
+
         callback.call(this, glyph, x, y, fontSize, options);
-        if (glyph.advanceWidth) {
-            x += glyph.advanceWidth * fontScale;
+
+        if (transformedGlyph.advanceWidth) {
+            x += transformedGlyph.advanceWidth * fontScale;
         }
 
         if (options.kerning && i < glyphs.length - 1) {

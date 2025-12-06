@@ -12,6 +12,7 @@ describe('variation.mjs', function() {
         zycon: loadSync('./test/fonts/Zycon.ttf'),
         cvar1: loadSync('./test/fonts/TestCVARGVAROne.ttf'),
         cvar2: loadSync('./test/fonts/TestCVARGVARTwo.ttf'),
+        kario: loadSync('./test/fonts/Kario39C3VarWEB-Roman.woff'),
     };
 
     it('pads axis tags with spaces for lookup', function() {
@@ -103,6 +104,7 @@ describe('variation.mjs', function() {
                 ]);
 
                 font = fonts.hvar2;
+                font.variation.set(font.variation.getDefaultCoordinates());
                 glyphPos = [];
                 assert.equal(
                     font.forEachGlyph('AB', 0, 0, font.unitsPerEm, {}, function(glyph, gX, gY, gFontSize) {
@@ -120,11 +122,11 @@ describe('variation.mjs', function() {
                     font.forEachGlyph('AB', 0, 0, font.unitsPerEm, {}, function(glyph, gX, gY, gFontSize) {
                         glyphPos.push({w: glyph.advanceWidth, lsb: glyph.leftSideBearing, gX});
                     }),
-                    900
+                    1700
                 );
                 assert.deepEqual(glyphPos, [
                     {w: 450, lsb: 0, gX: 0},
-                    {w: 450, lsb: 0, gX: 450},
+                    {w: 450, lsb: 0, gX: 850},
                 ]);
             });
         });
@@ -151,15 +153,16 @@ describe('variation.mjs', function() {
                 font.forEachGlyph('ABC', 0, 0, font.unitsPerEm, {}, function(glyph, gX, gY, gFontSize) {
                     glyphPos.push({w: glyph.advanceWidth, lsb: glyph.leftSideBearing, gX});
                 }),
-                1656
+                1782
             );
             assert.deepEqual(glyphPos, [
                 {w: 520, lsb: 10, gX: 0},
-                {w: 574, lsb: 100, gX: 520},
-                {w: 562, lsb: 56, gX: 1094},
+                {w: 574, lsb: 100, gX: 584},
+                {w: 562, lsb: 56, gX: 1196},
             ]);
 
             font = fonts.hvar2;
+            font.variation.set(font.variation.getDefaultCoordinates());
             glyphPos = [];
             assert.equal(
                 font.forEachGlyph('AB', 0, 0, font.unitsPerEm, {}, function(glyph, gX, gY, gFontSize) {
@@ -177,12 +180,42 @@ describe('variation.mjs', function() {
                 font.forEachGlyph('AB', 0, 0, font.unitsPerEm, {}, function(glyph, gX, gY, gFontSize) {
                     glyphPos.push({w: glyph.advanceWidth, lsb: glyph.leftSideBearing, gX});
                 }),
-                900
+                1700
             );
             assert.deepEqual(glyphPos, [
                 {w: 450, lsb: 0, gX: 0},
-                {w: 450, lsb: 0, gX: 450},
+                {w: 450, lsb: 0, gX: 850},
             ]);
+        });
+    });
+
+    describe('gvar phantom points', function() {
+        it('extracts metrics from phantom points when HVAR is absent', function() {
+            const font = fonts.kario;
+
+            // Verify the font uses GVAR but not HVAR
+            assert.ok(font.tables.gvar, 'Font should have GVAR table');
+            assert.ok(!font.tables.hvar, 'Font should not have HVAR table');
+
+            // Test at narrow width (wdth=30)
+            font.variation.set({wdth: 30, wght: 100});
+            const glyphA = font.charToGlyph('A');
+            const narrowWidth = font.variation.getTransform(glyphA, {wdth: 30, wght: 100}).advanceWidth;
+            assert.ok(narrowWidth < 200, `Narrow variation should have small advance width, got ${narrowWidth}`);
+
+            // Test at default width (wdth=100)
+            const normalWidth = font.variation.getTransform(glyphA, {wdth: 100, wght: 100}).advanceWidth;
+            assert.ok(normalWidth > 600, `Normal variation should have larger advance width, got ${normalWidth}`);
+
+            // Test at wide width (wdth=160)
+            const wideWidth = font.variation.getTransform(glyphA, {wdth: 160, wght: 100}).advanceWidth;
+            assert.ok(wideWidth > 1000, `Wide variation should have largest advance width, got ${wideWidth}`);
+
+            // Verify the relationship
+            assert.ok(narrowWidth < normalWidth,
+                `Narrow (${narrowWidth}) should be narrower than normal (${normalWidth})`);
+            assert.ok(normalWidth < wideWidth,
+                `Normal (${normalWidth}) should be narrower than wide (${wideWidth})`);
         });
     });
 

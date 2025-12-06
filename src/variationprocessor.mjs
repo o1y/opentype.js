@@ -362,7 +362,98 @@ export class VariationProcessor {
         return transformedPoints;
     }
 
-    
+    /**
+     * Calculates the transformed phantom points for a glyph.
+     * @param {opentype.Glyph} glyph - The glyph to calculate phantom points for
+     * @param {Object} variationData - The variation data from the GVAR table
+     * @param {Object} coords - Variation coordinates
+     * @returns {Array<{x: number, y: number}>} - Array of 4 phantom points
+     */
+    getTransformedPhantomPoints(glyph, variationData, coords) {
+        if(!coords) {
+            coords = this.font.variation.get();
+        }
+
+        const leftSideBearing = glyph._originalLeftSideBearing !== undefined ? glyph._originalLeftSideBearing : glyph.leftSideBearing;
+        const advanceWidth = glyph._originalAdvanceWidth !== undefined ? glyph._originalAdvanceWidth : glyph.advanceWidth;
+
+        const phantomPoints = [
+            { x: leftSideBearing || 0, y: 0 },
+            { x: (leftSideBearing || 0) + (advanceWidth || 0), y: 0 },
+            { x: 0, y: glyph.yMax || 0 },
+            { x: 0, y: glyph.yMin || 0 }
+        ];
+
+        const normalizedCoords = this.getNormalizedCoords(coords);
+        const { headers, sharedPoints } = variationData;
+        const axisCount = this.fvar().axes.length;
+        const outlinePointCount = glyph.points.length;
+
+        for(let h = 0; h < headers.length; h++) {
+            const header = headers[h];
+            let factor = 1;
+
+            for (let a = 0; a < axisCount; a++) {
+                let tupleCoords = header.peakTuple ? header.peakTuple : this.gvar().sharedTuples[header.sharedTupleRecordsIndex];
+
+                if (tupleCoords[a] === 0) {
+                    continue;
+                }
+
+                if (normalizedCoords[a] === 0) {
+                    factor = 0;
+                    break;
+                }
+
+                if (!header.intermediateStartTuple) {
+                    if ((normalizedCoords[a] < Math.min(0, tupleCoords[a])) ||
+                        (normalizedCoords[a] > Math.max(0, tupleCoords[a]))) {
+                        factor = 0;
+                        break;
+                    }
+
+                    factor = (factor * normalizedCoords[a] + Number.EPSILON) / (tupleCoords[a] + Number.EPSILON);
+                } else {
+                    if ((normalizedCoords[a] < header.intermediateStartTuple[a]) || (normalizedCoords[a] > header.intermediateEndTuple[a])) {
+                        factor = 0;
+                        break;
+                    } else if (normalizedCoords[a] < tupleCoords[a]) {
+                        factor = factor * (normalizedCoords[a] - header.intermediateStartTuple[a] + Number.EPSILON) / (tupleCoords[a] - header.intermediateStartTuple[a] + Number.EPSILON);
+                    } else {
+                        factor = factor * (header.intermediateEndTuple[a] - normalizedCoords[a] + Number.EPSILON) / (header.intermediateEndTuple[a] - tupleCoords[a] + Number.EPSILON);
+                    }
+                }
+            }
+
+            if (factor === 0) {
+                continue;
+            }
+
+            const tuplePoints = header.privatePoints.length ? header.privatePoints : sharedPoints;
+
+            if (tuplePoints.length === 0) {
+                for (let i = 0; i < 4; i++) {
+                    const deltaIndex = outlinePointCount + i;
+                    if (deltaIndex < header.deltas.length) {
+                        phantomPoints[i].x += header.deltas[deltaIndex] * factor;
+                        phantomPoints[i].y += header.deltasY[deltaIndex] * factor;
+                    }
+                }
+            } else {
+                for (let i = 0; i < tuplePoints.length; i++) {
+                    const pointIndex = tuplePoints[i];
+                    const phantomIndex = pointIndex - outlinePointCount;
+                    if (phantomIndex >= 0 && phantomIndex < 4) {
+                        phantomPoints[phantomIndex].x += header.deltas[i] * factor;
+                        phantomPoints[phantomIndex].y += header.deltasY[i] * factor;
+                    }
+                }
+            }
+        }
+
+        return phantomPoints;
+    }
+
     /**
      * Retrieves a transformed copy of a glyph based on the provided variation coordinates, or the glyph itself if no variation was applied
      * @param {opentype.Glyph|number} glyph - Glyph or index of glyph to transform.
@@ -395,11 +486,35 @@ export class VariationProcessor {
         }
 
         if(this.font.tables.hvar) {
-            glyph._advanceWidth = typeof glyph._advanceWidth !== 'undefined' ? glyph._advanceWidth: glyph.advanceWidth;
-            glyph.advanceWidth = transformedGlyph.advanceWidth = Math.round(glyph._advanceWidth + this.getVariableAdjustment(transformedGlyph.index, 'hvar', 'advanceWidth', coords));
-            
-            glyph._leftSideBearing = typeof glyph._leftSideBearing !== 'undefined' ? glyph._leftSideBearing: glyph.leftSideBearing;
-            glyph.leftSideBearing = transformedGlyph.leftSideBearing = Math.round(glyph._leftSideBearing + this.getVariableAdjustment(transformedGlyph.index, 'hvar', 'lsb', coords));
+            if (typeof glyph._advanceWidth === 'undefined') {
+                glyph._advanceWidth = glyph.advanceWidth;
+            }
+            if (typeof glyph._leftSideBearing === 'undefined') {
+                glyph._leftSideBearing = glyph.leftSideBearing;
+            }
+
+            if (transformedGlyph === glyph) {
+                transformedGlyph = new Glyph(Object.assign({}, glyph));
+            }
+
+            transformedGlyph.advanceWidth = Math.round(glyph._advanceWidth + this.getVariableAdjustment(transformedGlyph.index, 'hvar', 'advanceWidth', coords));
+            transformedGlyph.leftSideBearing = Math.round(glyph._leftSideBearing + this.getVariableAdjustment(transformedGlyph.index, 'hvar', 'lsb', coords));
+        } else if(hasPoints && this.gvar()) {
+            const variationData = this.gvar().glyphVariations[glyph.index];
+            if(variationData) {
+                const phantomPoints = this.getTransformedPhantomPoints(glyph, variationData, coords);
+                if(phantomPoints) {
+                    if (typeof glyph._originalAdvanceWidth === 'undefined') {
+                        glyph._originalAdvanceWidth = glyph.advanceWidth;
+                    }
+                    if (typeof glyph._originalLeftSideBearing === 'undefined') {
+                        glyph._originalLeftSideBearing = glyph.leftSideBearing;
+                    }
+
+                    transformedGlyph.advanceWidth = phantomPoints[1].x - phantomPoints[0].x;
+                    transformedGlyph.leftSideBearing = phantomPoints[0].x;
+                }
+            }
         }
 
         return transformedGlyph;
