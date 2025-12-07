@@ -217,6 +217,39 @@ describe('variation.mjs', function() {
             assert.ok(normalWidth < wideWidth,
                 `Normal (${normalWidth}) should be narrower than wide (${wideWidth})`);
         });
+
+        it('adjusts advance width for glyphs without outline points (e.g., space)', function() {
+            const font = fonts.kario;
+
+            // Get the space glyph
+            const spaceGlyph = font.charToGlyph(' ');
+
+            // Verify the space glyph has no outline points
+            assert.ok(!spaceGlyph.points || spaceGlyph.points.length === 0,
+                'Space glyph should have no outline points');
+
+            // Test at narrow width (wdth=30)
+            const narrowSpace = font.variation.getTransform(spaceGlyph, {wdth: 30, wght: 100});
+
+            // Test at normal width (wdth=100)
+            const normalSpace = font.variation.getTransform(spaceGlyph, {wdth: 100, wght: 100});
+
+            // Test at wide width (wdth=160)
+            const wideSpace = font.variation.getTransform(spaceGlyph, {wdth: 160, wght: 100});
+
+            // Verify the space width changes with the wdth axis
+            assert.ok(narrowSpace.advanceWidth < normalSpace.advanceWidth,
+                `Narrow space (${narrowSpace.advanceWidth}) should be narrower than normal (${normalSpace.advanceWidth})`);
+            assert.ok(normalSpace.advanceWidth < wideSpace.advanceWidth,
+                `Normal space (${normalSpace.advanceWidth}) should be narrower than wide (${wideSpace.advanceWidth})`);
+
+            // Verify word spacing in actual text rendering
+            const narrowTotalWidth = font.getAdvanceWidth('A B', font.unitsPerEm, {variation: {wdth: 30, wght: 100}});
+            const wideTotalWidth = font.getAdvanceWidth('A B', font.unitsPerEm, {variation: {wdth: 160, wght: 100}});
+
+            assert.ok(narrowTotalWidth < wideTotalWidth,
+                `Narrow text width (${narrowTotalWidth}) should be less than wide (${wideTotalWidth})`);
+        });
     });
 
 });

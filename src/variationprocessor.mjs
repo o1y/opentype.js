@@ -387,7 +387,7 @@ export class VariationProcessor {
         const normalizedCoords = this.getNormalizedCoords(coords);
         const { headers, sharedPoints } = variationData;
         const axisCount = this.fvar().axes.length;
-        const outlinePointCount = glyph.points.length;
+        const outlinePointCount = glyph.points ? glyph.points.length : 0;
 
         for(let h = 0; h < headers.length; h++) {
             const header = headers[h];
@@ -499,9 +499,12 @@ export class VariationProcessor {
 
             transformedGlyph.advanceWidth = Math.round(glyph._advanceWidth + this.getVariableAdjustment(transformedGlyph.index, 'hvar', 'advanceWidth', coords));
             transformedGlyph.leftSideBearing = Math.round(glyph._leftSideBearing + this.getVariableAdjustment(transformedGlyph.index, 'hvar', 'lsb', coords));
-        } else if(hasPoints && this.gvar()) {
+        } else if(this.gvar()) {
             const variationData = this.gvar().glyphVariations[glyph.index];
             if(variationData) {
+                if(!coords) {
+                    coords = this.font.variation.get();
+                }
                 const phantomPoints = this.getTransformedPhantomPoints(glyph, variationData, coords);
                 if(phantomPoints) {
                     if (typeof glyph._originalAdvanceWidth === 'undefined') {
@@ -509,6 +512,10 @@ export class VariationProcessor {
                     }
                     if (typeof glyph._originalLeftSideBearing === 'undefined') {
                         glyph._originalLeftSideBearing = glyph.leftSideBearing;
+                    }
+
+                    if (transformedGlyph === glyph) {
+                        transformedGlyph = new Glyph(Object.assign({}, glyph));
                     }
 
                     transformedGlyph.advanceWidth = phantomPoints[1].x - phantomPoints[0].x;
