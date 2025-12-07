@@ -45,10 +45,14 @@ export class VariationProcessor {
             if(tagValue === undefined) {
                 tagValue = axis.defaultValue;
             }
-            if (tagValue < axis.defaultValue) {
-                normalized.push((tagValue - axis.defaultValue + Number.EPSILON) / (axis.defaultValue - axis.minValue + Number.EPSILON));
+            if (tagValue === axis.defaultValue) {
+                normalized.push(0);
+            } else if (tagValue < axis.defaultValue) {
+                const range = axis.defaultValue - axis.minValue;
+                normalized.push(range === 0 ? 0 : (tagValue - axis.defaultValue) / range);
             } else {
-                normalized.push((tagValue - axis.defaultValue + Number.EPSILON) / (axis.maxValue - axis.defaultValue + Number.EPSILON));
+                const range = axis.maxValue - axis.defaultValue;
+                normalized.push(range === 0 ? 0 : (tagValue - axis.defaultValue) / range);
             }
         }
 
@@ -235,6 +239,67 @@ export class VariationProcessor {
         }
     }
 
+    /**
+     * Determines if a composite glyph's gvar data uses outline-based deltas
+     * (deltas for accumulated outline points) vs component-based deltas
+     * (deltas for component positions as per OpenType spec).
+     *
+     * Most font tools (fonttools, fontmake) produce outline-based deltas,
+     * even though the OpenType spec describes component-based deltas.
+     *
+     * @param {Object} variationData - The gvar variation data for the glyph
+     * @param {Glyph} glyph - The composite glyph
+     * @returns {string} - 'outline', 'component', or 'rebuild'
+     */
+    detectCompositeGvarType(variationData, glyph) {
+        if (!glyph.components || !variationData.headers || variationData.headers.length === 0) {
+            return 'outline';
+        }
+
+        const outlinePointCount = glyph.points ? glyph.points.length : 0;
+        const componentCount = glyph.components.length;
+
+        // Check the first header with deltas to determine the type
+        let isOutlineBased = false;
+        for (const header of variationData.headers) {
+            if (!header.deltas || header.deltas.length === 0) continue;
+
+            const deltaCount = header.deltas.length;
+
+            // If delta count matches outline points + phantom (4), it's outline-based
+            if (deltaCount === outlinePointCount + 4 || deltaCount === outlinePointCount) {
+                isOutlineBased = true;
+                break;
+            }
+
+            // If delta count matches component count + phantom (4), it's component-based
+            if (deltaCount === componentCount + 4 || deltaCount <= componentCount + 4) {
+                return 'component';
+            }
+        }
+
+        if (!isOutlineBased) {
+            return 'outline';
+        }
+
+        // For outline-based gvar with components that have their own gvar,
+        // always rebuild from components. This ensures proper positioning when
+        // the composite's gvar may not have correct deltas for all axes.
+        // Many font tools produce incomplete composite gvar, where deltas exist
+        // for some axes (e.g., optical size) but not others (e.g., width).
+        for (let c = 0; c < glyph.components.length; c++) {
+            const component = glyph.components[c];
+            const componentGvar = this.gvar() && this.gvar().glyphVariations[component.glyphIndex];
+            if (componentGvar && componentGvar.headers && componentGvar.headers.length > 0) {
+                // Component has its own variation data, so rebuild from components
+                // to ensure proper positioning across all variation axes
+                return 'rebuild';
+            }
+        }
+
+        return 'outline';
+    }
+
     applyTupleVariationStore(variationData, points, coords, flavor = 'gvar', args = {}) {
         if(!coords) {
             coords = this.font.variation.get();
@@ -252,6 +317,9 @@ export class VariationProcessor {
             transformedPoints = [...points];
         }
 
+        const isCompositeGlyph = args.glyph && args.glyph.numberOfContours === -1 && args.glyph.components;
+        const compositeGvarType = isCompositeGlyph ? this.detectCompositeGvarType(variationData, args.glyph) : null;
+
         for(let h = 0; h < headers.length; h++) {
             const header = headers[h];
             let factor = 1;
@@ -267,23 +335,23 @@ export class VariationProcessor {
                         break;
                 }
 
-                
+
                 if (tupleCoords[a] === 0) {
                     continue;
                 }
-                
+
                 if (normalizedCoords[a] === 0) {
                     factor = 0;
                     break;
                 }
-            
+
                 if (!header.intermediateStartTuple) {
                     if ((normalizedCoords[a] < Math.min(0, tupleCoords[a])) ||
                         (normalizedCoords[a] > Math.max(0, tupleCoords[a]))) {
                         factor = 0;
                         break;
                     }
-            
+
                     factor = (factor * normalizedCoords[a] + Number.EPSILON) / (tupleCoords[a] + Number.EPSILON);
                 } else {
                     if ((normalizedCoords[a] < header.intermediateStartTuple[a]) || (normalizedCoords[a] > header.intermediateEndTuple[a])) {
@@ -303,13 +371,19 @@ export class VariationProcessor {
 
             const tuplePoints = header.privatePoints.length ? header.privatePoints: sharedPoints;
 
-            if(flavor === 'gvar' && args.glyph && args.glyph.isComposite) {
-                /** @TODO: composite glyphs that are not explicitly targeted in the gvar table
-                 ** will not be transformed. It's unclear whether this is the desired behaviour or not,
-                ** @see https://github.com/unicode-org/text-rendering-tests/issues/96
-                */
+            // For composite glyphs with component-based gvar (rare, per OpenType spec),
+            // use the old transformComponents method
+            if (flavor === 'gvar' && isCompositeGlyph && compositeGvarType === 'component') {
                 this.transformComponents(args.glyph, transformedPoints, coords, tuplePoints, header, factor);
-            } else if (tuplePoints.length === 0) {
+                continue;
+            }
+
+            // For composites that need rebuilding, skip deltas (rebuild happens after the loop)
+            if (flavor === 'gvar' && isCompositeGlyph && compositeGvarType === 'rebuild') {
+                continue;
+            }
+
+            if (tuplePoints.length === 0) {
                 for (let i = 0; i < transformedPoints.length; i++) {
                     const point = transformedPoints[i];
                     if(flavor === 'gvar') {
@@ -347,18 +421,99 @@ export class VariationProcessor {
 
                 if(flavor === 'gvar') {
                     this.interpolatePoints(interpolatedPoints, transformedPoints, deltaMap);
-    
+
                     for (let i = 0; i < points.length; i++) {
                         let deltaX = interpolatedPoints[i].x - transformedPoints[i].x;
                         let deltaY = interpolatedPoints[i].y - transformedPoints[i].y;
-    
+
                         transformedPoints[i].x = Math.round(transformedPoints[i].x + deltaX);
                         transformedPoints[i].y = Math.round(transformedPoints[i].y + deltaY);
                     }
                 }
             }
         }
-        
+
+        // Rebuild composite glyphs from varied components
+        if (flavor === 'gvar' && isCompositeGlyph && compositeGvarType === 'rebuild') {
+            let pointsIndex = 0;
+
+            // Use the TOP portion (upper 30%) of the base to avoid descenders affecting alignment
+            const baseComponent = args.glyph.components[0];
+            const baseComponentGlyph = this.font.glyphs.get(baseComponent.glyphIndex);
+            const variedBaseComponent = this.getTransform(baseComponentGlyph, coords);
+
+            const getTopCenterX = (points) => {
+                const ys = points.map(p => p.y);
+                const maxY = Math.max(...ys);
+                const threshold = maxY * 0.7; // Upper 30%
+                const topPoints = points.filter(p => p.y >= threshold);
+                if (topPoints.length === 0) {
+                    const xs = points.map(p => p.x);
+                    return (Math.min(...xs) + Math.max(...xs)) / 2;
+                }
+                const topXs = topPoints.map(p => p.x);
+                return (Math.min(...topXs) + Math.max(...topXs)) / 2;
+            };
+
+            const defaultBaseTopCenterX = getTopCenterX(baseComponentGlyph.points);
+            const variedBaseTopCenterX = getTopCenterX(variedBaseComponent.points);
+            const baseCenterShiftX = variedBaseTopCenterX - defaultBaseTopCenterX;
+
+            const defaultBaseYs = baseComponentGlyph.points.map(p => p.y);
+            const defaultBaseCenterY = (Math.min(...defaultBaseYs) + Math.max(...defaultBaseYs)) / 2;
+            const variedBaseYs = variedBaseComponent.points.map(p => p.y);
+            const variedBaseCenterY = (Math.min(...variedBaseYs) + Math.max(...variedBaseYs)) / 2;
+            const baseCenterShiftY = variedBaseCenterY - defaultBaseCenterY;
+
+            for (let c = 0; c < args.glyph.components.length; c++) {
+                const component = args.glyph.components[c];
+                const componentGlyph = this.font.glyphs.get(component.glyphIndex);
+                const variedComponent = this.getTransform(componentGlyph, coords);
+                const adjustedComponent = copyComponent(component);
+
+                // Handle scale transforms (e.g., 'u' is 'n' rotated 180° with xScale=-1, yScale=-1)
+                const hasXScaleTransform = component.xScale === -1;
+                const hasYScaleTransform = component.yScale === -1;
+                if ((hasXScaleTransform || hasYScaleTransform) && c === 0) {
+                    if (hasXScaleTransform) {
+                        const compOrigWidth = componentGlyph.advanceWidth || 1;
+                        const compVariedWidth = variedComponent.advanceWidth || compOrigWidth;
+                        const compWidthRatio = compVariedWidth / compOrigWidth;
+                        adjustedComponent.dx = component.dx * compWidthRatio;
+                    }
+
+                    if (hasYScaleTransform) {
+                        // Adjust dy for height change to maintain baseline (newY = dy - y)
+                        const defaultMaxY = Math.max(...componentGlyph.points.map(p => p.y));
+                        const variedMaxY = Math.max(...variedComponent.points.map(p => p.y));
+                        const dyAdjustment = variedMaxY - defaultMaxY;
+                        adjustedComponent.dy = component.dy + dyAdjustment;
+                    }
+                } else if (c > 0) {
+                    // Align non-base components (accents) with base's center shift
+                    const defaultCompXs = componentGlyph.points.map(p => p.x);
+                    const defaultCompCenterX = (Math.min(...defaultCompXs) + Math.max(...defaultCompXs)) / 2;
+                    const variedCompXs = variedComponent.points.map(p => p.x);
+                    const variedCompCenterX = (Math.min(...variedCompXs) + Math.max(...variedCompXs)) / 2;
+                    const compCenterShiftX = variedCompCenterX - defaultCompCenterX;
+                    const dxAdjustment = baseCenterShiftX - compCenterShiftX;
+                    adjustedComponent.dx = component.dx + dxAdjustment;
+
+                    const defaultCompYs = componentGlyph.points.map(p => p.y);
+                    const defaultCompCenterY = (Math.min(...defaultCompYs) + Math.max(...defaultCompYs)) / 2;
+                    const variedCompYs = variedComponent.points.map(p => p.y);
+                    const variedCompCenterY = (Math.min(...variedCompYs) + Math.max(...variedCompYs)) / 2;
+                    const compCenterShiftY = variedCompCenterY - defaultCompCenterY;
+                    const dyAdjustment = baseCenterShiftY - compCenterShiftY;
+                    adjustedComponent.dy = component.dy + dyAdjustment;
+                }
+
+                const transformedComponentPoints = transformPoints(variedComponent.points, adjustedComponent);
+                transformedPoints.splice(pointsIndex, transformedComponentPoints.length, ...transformedComponentPoints);
+                pointsIndex += componentGlyph.points.length;
+            }
+        }
+
         return transformedPoints;
     }
 
@@ -505,6 +660,7 @@ export class VariationProcessor {
                 if(!coords) {
                     coords = this.font.variation.get();
                 }
+
                 const phantomPoints = this.getTransformedPhantomPoints(glyph, variationData, coords);
                 if(phantomPoints) {
                     if (typeof glyph._originalAdvanceWidth === 'undefined') {
@@ -518,8 +674,90 @@ export class VariationProcessor {
                         transformedGlyph = new Glyph(Object.assign({}, glyph));
                     }
 
-                    transformedGlyph.advanceWidth = phantomPoints[1].x - phantomPoints[0].x;
-                    transformedGlyph.leftSideBearing = phantomPoints[0].x;
+                    const phantomAdvanceWidth = phantomPoints[1].x - phantomPoints[0].x;
+                    const phantomLSB = phantomPoints[0].x;
+                    const isComposite = glyph.numberOfContours === -1 && glyph.components && glyph.components.length > 0;
+
+                    let outlineMinX = null;
+                    let outlineMaxX = null;
+                    if (transformedGlyph.points && transformedGlyph.points.length > 0) {
+                        const xs = transformedGlyph.points.map(p => p.x);
+                        outlineMinX = Math.min(...xs);
+                        outlineMaxX = Math.max(...xs);
+                    }
+
+                    // Use threshold > 5 to avoid floating-point precision issues
+                    const phantomVariation = Math.abs(phantomAdvanceWidth - glyph._originalAdvanceWidth);
+                    let phantomHasValidVariation = phantomVariation > 5;
+
+                    // Check if phantom advanceWidth is consistent with outline bounds
+                    if (isComposite && phantomHasValidVariation && outlineMaxX !== null) {
+                        // Phantom advanceWidth must be >= outline maxX for valid spacing
+                        if (phantomAdvanceWidth < outlineMaxX) {
+                            phantomHasValidVariation = false;
+                        } else if (outlineMinX !== null) {
+                            const outlineWidth = outlineMaxX - outlineMinX;
+                            const phantomSidebearings = phantomAdvanceWidth - outlineWidth;
+                            const originalOutlineWidth = (glyph._originalAdvanceWidth || glyph.advanceWidth) -
+                                (glyph._originalLeftSideBearing || glyph.leftSideBearing || 0);
+                            const originalSidebearings = (glyph._originalAdvanceWidth || glyph.advanceWidth) - originalOutlineWidth;
+
+                            if (originalSidebearings > 0) {
+                                const sidebearingRatio = phantomSidebearings / originalSidebearings;
+                                if (sidebearingRatio > 3 || sidebearingRatio < 0.3) {
+                                    phantomHasValidVariation = false;
+                                }
+                            }
+                        }
+                    }
+
+                    if (isComposite && !phantomHasValidVariation) {
+                        // Check for USE_MY_METRICS flag (0x200)
+                        let metricsComponent = null;
+                        for (const component of glyph.components) {
+                            if (component.flags & 0x200) {
+                                metricsComponent = component;
+                                break;
+                            }
+                        }
+
+                        if (metricsComponent) {
+                            const metricsGlyph = this.font.glyphs.get(metricsComponent.glyphIndex);
+                            const variedMetricsGlyph = this.getTransform(metricsGlyph, coords);
+                            transformedGlyph.advanceWidth = variedMetricsGlyph.advanceWidth;
+                            transformedGlyph.leftSideBearing = variedMetricsGlyph.leftSideBearing;
+                        } else if (outlineMinX !== null) {
+                            const originalOutlineWidth = (glyph._originalAdvanceWidth || glyph.advanceWidth) -
+                                (glyph._originalLeftSideBearing || glyph.leftSideBearing || 0);
+                            const firstComponent = glyph.components[0];
+                            const firstComponentGlyph = this.font.glyphs.get(firstComponent.glyphIndex);
+                            const variedFirstComponent = this.getTransform(firstComponentGlyph, coords);
+                            const origCompWidth = firstComponentGlyph.advanceWidth || 0;
+                            const variedCompWidth = variedFirstComponent.advanceWidth || origCompWidth;
+
+                            if (origCompWidth > 0) {
+                                const widthRatio = variedCompWidth / origCompWidth;
+                                transformedGlyph.advanceWidth = Math.round(glyph._originalAdvanceWidth * widthRatio);
+                            } else {
+                                const outlineWidth = outlineMaxX - outlineMinX;
+                                const originalRSB = (glyph._originalAdvanceWidth || glyph.advanceWidth) -
+                                    (glyph._originalLeftSideBearing || 0) - originalOutlineWidth;
+                                transformedGlyph.advanceWidth = Math.round(outlineMinX + outlineWidth + originalRSB);
+                            }
+                            transformedGlyph.leftSideBearing = Math.round(outlineMinX);
+                        } else {
+                            transformedGlyph.advanceWidth = phantomAdvanceWidth;
+                            transformedGlyph.leftSideBearing = phantomLSB;
+                        }
+                    } else {
+                        transformedGlyph.advanceWidth = phantomAdvanceWidth;
+
+                        if (outlineMinX !== null && Math.abs(outlineMinX - phantomLSB) > 1) {
+                            transformedGlyph.leftSideBearing = Math.round(outlineMinX);
+                        } else {
+                            transformedGlyph.leftSideBearing = Math.round(phantomLSB);
+                        }
+                    }
                 }
             }
         }

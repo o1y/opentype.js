@@ -1,6 +1,6 @@
 import assert from 'assert';
 import { parse } from '../../src/opentype.mjs';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 const loadSync = (url, opt) => parse(readFileSync(url), opt);
 
 describe('tables/gvar.mjs', function() {
@@ -18,6 +18,10 @@ describe('tables/gvar.mjs', function() {
         gvarTestCvar1: loadSync('./test/fonts/TestCVARGVAROne.ttf'),
         gvarTestCvar2: loadSync('./test/fonts/TestCVARGVARTwo.ttf'),
     };
+
+    // Load Kario font for composite variation tests if available
+    const karioPath = './test/fonts/Kario39C3VarWEB-Roman.woff';
+    const karioFont = existsSync(karioPath) ? loadSync(karioPath) : null;
     it('correctly parses the glyph variations table', function() {
         // tests for all fonts
         for(const fontName in fonts) {
@@ -152,5 +156,247 @@ describe('tables/gvar.mjs', function() {
             font.variation.set({slnt: -9});
             assert.equal(font.glyphs.get(6).toPathData({}, font), transformedPathData);
         });
+    });
+
+    it('maintains tittle alignment for composite glyphs across width variations', function() {
+        if (!karioFont) {
+            this.skip();
+            return;
+        }
+
+        // Helper to get stem top center (upper 30% of glyph)
+        function getStemTopCenter(points) {
+            const ys = points.map(p => p.y);
+            const maxY = Math.max(...ys);
+            const threshold = maxY * 0.7;
+            const topPoints = points.filter(p => p.y >= threshold);
+            if (topPoints.length === 0) return null;
+            const topXs = topPoints.map(p => p.x);
+            return (Math.min(...topXs) + Math.max(...topXs)) / 2;
+        }
+
+        // Test 'i' and 'j' glyphs
+        for (const char of ['i', 'j']) {
+            const glyph = karioFont.charToGlyph(char);
+            glyph.getPath(); // Force load components
+
+            const baseGlyph = karioFont.glyphs.get(glyph.components[0].glyphIndex);
+            const numBasePoints = baseGlyph.points.length;
+
+            // Get default tittle offset
+            karioFont.variation.set({wdth: 100});
+            const defaultTransformed = karioFont.variation.getTransform(glyph, {wdth: 100});
+            const defaultXs = defaultTransformed.points.map(p => p.x);
+            const defaultStemTop = getStemTopCenter(defaultTransformed.points.slice(0, numBasePoints));
+            const defaultTittleXs = defaultXs.slice(numBasePoints);
+            const defaultTittleCenter = (Math.min(...defaultTittleXs) + Math.max(...defaultTittleXs)) / 2;
+            const defaultOffset = defaultTittleCenter - defaultStemTop;
+
+            // Test at different widths - tittle offset should remain consistent
+            for (const wdth of [46, 123]) {
+                karioFont.variation.set({wdth});
+                const transformed = karioFont.variation.getTransform(glyph, {wdth});
+                const xs = transformed.points.map(p => p.x);
+                const stemTop = getStemTopCenter(transformed.points.slice(0, numBasePoints));
+                const tittleXs = xs.slice(numBasePoints);
+                const tittleCenter = (Math.min(...tittleXs) + Math.max(...tittleXs)) / 2;
+                const offset = tittleCenter - stemTop;
+
+                // Tittle offset should stay within 2 units of default
+                assert.ok(
+                    Math.abs(offset - defaultOffset) < 2,
+                    `${char} tittle offset at wdth=${wdth} (${offset.toFixed(1)}) differs from default (${defaultOffset.toFixed(1)})`
+                );
+            }
+        }
+    });
+
+    it('varies advance width for composite glyphs with width axis', function() {
+        if (!karioFont) {
+            this.skip();
+            return;
+        }
+
+        for (const char of ['i', 'j']) {
+            const glyph = karioFont.charToGlyph(char);
+            glyph.getPath();
+
+            // Get advance widths at different wdth values
+            const advanceWidths = {};
+            for (const wdth of [46, 100, 123]) {
+                karioFont.variation.set({wdth});
+                const transformed = karioFont.variation.getTransform(glyph, {wdth});
+                advanceWidths[wdth] = transformed.advanceWidth;
+            }
+
+            // Advance width should increase with wdth axis
+            assert.ok(
+                advanceWidths[46] < advanceWidths[100],
+                `${char} advanceWidth at wdth=46 (${advanceWidths[46]}) should be less than at wdth=100 (${advanceWidths[100]})`
+            );
+            assert.ok(
+                advanceWidths[100] < advanceWidths[123],
+                `${char} advanceWidth at wdth=100 (${advanceWidths[100]}) should be less than at wdth=123 (${advanceWidths[123]})`
+            );
+        }
+    });
+
+    it('handles rotated/mirrored composite glyphs (like u from n) across width variations', function() {
+        if (!karioFont) {
+            this.skip();
+            return;
+        }
+
+        // "u" in Kario is "n" rotated 180° (xScale=-1, yScale=-1)
+        // The dx offset must scale with width variation to position correctly
+        const uGlyph = karioFont.charToGlyph('u');
+        uGlyph.getPath();
+
+        // Verify it's a composite with a transform
+        assert.equal(uGlyph.numberOfContours, -1, 'u should be composite');
+        assert.equal(uGlyph.components[0].xScale, -1, 'u should use xScale=-1 (mirrored)');
+
+        // Test advance widths at different wdth values
+        for (const wdth of [46, 100, 123]) {
+            karioFont.variation.set({wdth});
+            const transformed = karioFont.variation.getTransform(uGlyph, {wdth});
+
+            // Get outline bounds
+            const xs = transformed.points.map(p => p.x);
+            const minX = Math.min(...xs);
+            const maxX = Math.max(...xs);
+
+            // The outline should fit within the advance width with reasonable sidebearings
+            // At wdth=46: advanceWidth should be ~240, not 606
+            // At wdth=123: advanceWidth should be ~760
+            assert.ok(
+                minX >= 0 && minX < 50,
+                `u at wdth=${wdth}: leftSideBearing (${minX.toFixed(0)}) should be small positive`
+            );
+            assert.ok(
+                maxX < transformed.advanceWidth + 10,
+                `u at wdth=${wdth}: outline maxX (${maxX.toFixed(0)}) should fit in advanceWidth (${transformed.advanceWidth.toFixed(0)})`
+            );
+        }
+
+        // Verify advance width varies with wdth axis
+        karioFont.variation.set({wdth: 46});
+        const narrow = karioFont.variation.getTransform(uGlyph, {wdth: 46});
+        karioFont.variation.set({wdth: 123});
+        const wide = karioFont.variation.getTransform(uGlyph, {wdth: 123});
+
+        assert.ok(
+            narrow.advanceWidth < 300,
+            `u at wdth=46 should have narrow advanceWidth (${narrow.advanceWidth.toFixed(0)}), not default`
+        );
+        assert.ok(
+            wide.advanceWidth > 700,
+            `u at wdth=123 should have wide advanceWidth (${wide.advanceWidth.toFixed(0)})`
+        );
+
+        // Verify baseline alignment stays consistent across widths
+        // The minY (baseline position) should be approximately the same at all widths
+        karioFont.variation.set({wdth: 100});
+        const defaultTransform = karioFont.variation.getTransform(uGlyph, {wdth: 100});
+        const defaultMinY = Math.min(...defaultTransform.points.map(p => p.y));
+
+        for (const wdth of [46, 123]) {
+            karioFont.variation.set({wdth});
+            const transformed = karioFont.variation.getTransform(uGlyph, {wdth});
+            const minY = Math.min(...transformed.points.map(p => p.y));
+            assert.ok(
+                Math.abs(minY - defaultMinY) < 2,
+                `u baseline at wdth=${wdth} (minY=${minY.toFixed(0)}) should match default (${defaultMinY.toFixed(0)})`
+            );
+        }
+    });
+
+    it('maintains diacritic alignment for umlauts across width variations', function() {
+        if (!karioFont) {
+            this.skip();
+            return;
+        }
+
+        // Helper to get stem top center (upper 30% of glyph)
+        function getStemTopCenter(points) {
+            const ys = points.map(p => p.y);
+            const maxY = Math.max(...ys);
+            const threshold = maxY * 0.7;
+            const topPoints = points.filter(p => p.y >= threshold);
+            if (topPoints.length === 0) {
+                const xs = points.map(p => p.x);
+                return (Math.min(...xs) + Math.max(...xs)) / 2;
+            }
+            const topXs = topPoints.map(p => p.x);
+            return (Math.min(...topXs) + Math.max(...topXs)) / 2;
+        }
+
+        // Test umlaut glyphs
+        for (const char of ['ä', 'ö', 'ü']) {
+            const glyph = karioFont.charToGlyph(char);
+            glyph.getPath();
+
+            const baseGlyph = karioFont.glyphs.get(glyph.components[0].glyphIndex);
+            const numBasePoints = baseGlyph.points.length;
+
+            // Get default diacritic offset
+            karioFont.variation.set({wdth: 100});
+            const defaultTransformed = karioFont.variation.getTransform(glyph, {wdth: 100});
+            const defaultStemTop = getStemTopCenter(defaultTransformed.points.slice(0, numBasePoints));
+            const defaultDiacriticXs = defaultTransformed.points.slice(numBasePoints).map(p => p.x);
+            const defaultDiacriticCenter = (Math.min(...defaultDiacriticXs) + Math.max(...defaultDiacriticXs)) / 2;
+            const defaultOffset = defaultDiacriticCenter - defaultStemTop;
+
+            // Test at different widths - diacritic offset should remain consistent
+            for (const wdth of [46, 123]) {
+                karioFont.variation.set({wdth});
+                const transformed = karioFont.variation.getTransform(glyph, {wdth});
+                const stemTop = getStemTopCenter(transformed.points.slice(0, numBasePoints));
+                const diacriticXs = transformed.points.slice(numBasePoints).map(p => p.x);
+                const diacriticCenter = (Math.min(...diacriticXs) + Math.max(...diacriticXs)) / 2;
+                const offset = diacriticCenter - stemTop;
+
+                // Diacritic offset should stay within 2 units of default
+                assert.ok(
+                    Math.abs(offset - defaultOffset) < 2,
+                    `${char} diacritic offset at wdth=${wdth} (${offset.toFixed(1)}) differs from default (${defaultOffset.toFixed(1)})`
+                );
+            }
+        }
+    });
+
+    it('correctly varies advance width for nested composites with rotated base (ü)', function() {
+        if (!karioFont) {
+            this.skip();
+            return;
+        }
+
+        // "ü" is a composite: "u" (which is rotated "n") + umlaut diacritic
+        // The phantom points may have incorrect variation data, so we must
+        // detect inconsistency and fall back to component-based calculation
+        const umlautU = karioFont.charToGlyph('ü');
+        umlautU.getPath();
+
+        // Get advance widths at different wdth values
+        const advanceWidths = {};
+        for (const wdth of [46, 100, 123]) {
+            karioFont.variation.set({wdth});
+            const transformed = karioFont.variation.getTransform(umlautU, {wdth});
+            advanceWidths[wdth] = transformed.advanceWidth;
+        }
+
+        // Advance width should scale with wdth axis, not stay near default
+        assert.ok(
+            advanceWidths[46] < 300,
+            `ü at wdth=46 should have narrow advanceWidth (${advanceWidths[46].toFixed(0)}), not ${advanceWidths[100].toFixed(0)}`
+        );
+        assert.ok(
+            advanceWidths[46] < advanceWidths[100],
+            `ü advanceWidth at wdth=46 (${advanceWidths[46].toFixed(0)}) should be less than at wdth=100 (${advanceWidths[100].toFixed(0)})`
+        );
+        assert.ok(
+            advanceWidths[100] < advanceWidths[123],
+            `ü advanceWidth at wdth=100 (${advanceWidths[100].toFixed(0)}) should be less than at wdth=123 (${advanceWidths[123].toFixed(0)})`
+        );
     });
 });
