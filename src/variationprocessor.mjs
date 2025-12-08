@@ -398,34 +398,31 @@ export class VariationProcessor {
                     }
                 }
             } else {
-                let interpolatedPoints;
-                if(flavor === 'gvar') {
-                    interpolatedPoints = transformedPoints.map(copyPoint);
-                } else if (flavor === 'cvar') {
-                    interpolatedPoints = transformedPoints;
-                }
-                const deltaMap = Array(points.length).fill(false);
-                for (let i = 0; i < tuplePoints.length; i++) {
-                    let pointIndex = tuplePoints[i];
-                    if (pointIndex < points.length) {
-                        let point = interpolatedPoints[pointIndex];
-                        if(flavor === 'gvar') {
-                            deltaMap[pointIndex] = true;
-                            point.x += header.deltas[i] * factor;
-                            point.y += header.deltasY[i] * factor;
-                        } else if (flavor === 'cvar') {
-                            transformedPoints[pointIndex] = Math.round(point + header.deltas[i] * factor);
+                if (flavor === 'cvar') {
+                    for (let i = 0; i < tuplePoints.length; i++) {
+                        let pointIndex = tuplePoints[i];
+                        if (pointIndex < points.length) {
+                            transformedPoints[pointIndex] = Math.round(transformedPoints[pointIndex] + header.deltas[i] * factor);
                         }
                     }
-                }
+                } else if (flavor === 'gvar') {
+                    const deltaPoints = points.map(copyPoint);
+                    const deltaMap = Array(points.length).fill(false);
 
-                if(flavor === 'gvar') {
-                    this.interpolatePoints(interpolatedPoints, transformedPoints, deltaMap);
+                    for (let i = 0; i < tuplePoints.length; i++) {
+                        let pointIndex = tuplePoints[i];
+                        if (pointIndex < points.length) {
+                            deltaMap[pointIndex] = true;
+                            deltaPoints[pointIndex].x += header.deltas[i] * factor;
+                            deltaPoints[pointIndex].y += header.deltasY[i] * factor;
+                        }
+                    }
+
+                    this.interpolatePoints(deltaPoints, points, deltaMap);
 
                     for (let i = 0; i < points.length; i++) {
-                        let deltaX = interpolatedPoints[i].x - transformedPoints[i].x;
-                        let deltaY = interpolatedPoints[i].y - transformedPoints[i].y;
-
+                        let deltaX = deltaPoints[i].x - points[i].x;
+                        let deltaY = deltaPoints[i].y - points[i].y;
                         transformedPoints[i].x = Math.round(transformedPoints[i].x + deltaX);
                         transformedPoints[i].y = Math.round(transformedPoints[i].y + deltaY);
                     }

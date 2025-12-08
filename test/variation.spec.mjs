@@ -250,6 +250,24 @@ describe('variation.mjs', function() {
             assert.ok(narrowTotalWidth < wideTotalWidth,
                 `Narrow text width (${narrowTotalWidth}) should be less than wide (${wideTotalWidth})`);
         });
+
+        it('correctly interpolates sparse points when multiple axes are varied', function() {
+            const font = fonts.kario;
+            const zGlyph = font.charToGlyph('z');
+
+            // Points 6 and 7 (bottom bar of 'z') have no Y deltas, should stay at Y=0
+            assert.strictEqual(zGlyph.points[6].y, 0);
+            assert.strictEqual(zGlyph.points[7].y, 0);
+
+            // Single-axis variations
+            assert.strictEqual(font.variation.getTransform(zGlyph, {wdth: 30, wght: 100}).points[6].y, 0);
+            assert.strictEqual(font.variation.getTransform(zGlyph, {wdth: 100, wght: 10}).points[6].y, 0);
+
+            // Multi-axis variations (these were broken before fix)
+            assert.strictEqual(font.variation.getTransform(zGlyph, {wdth: 97, wght: 25}).points[6].y, 0);
+            assert.strictEqual(font.variation.getTransform(zGlyph, {wdth: 30, wght: 10}).points[6].y, 0);
+            assert.strictEqual(font.variation.getTransform(zGlyph, {wdth: 30, wght: 10}).points[7].y, 0);
+        });
     });
 
 });
