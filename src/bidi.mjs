@@ -12,6 +12,7 @@ import arabicRequiredLigatures from './features/arab/arabicRequiredLigatures.mjs
 import ccmpReplacementCheck from './features/ccmp/contextCheck/ccmpReplacement.mjs';
 import ccmpReplacement from './features/ccmp/ccmpReplacementLigatures.mjs';
 import latinWordCheck from './features/latn/contextCheck/latinWord.mjs';
+import ligatureSequenceCheck from './features/latn/contextCheck/ligatureSequence.mjs';
 import latinLigature from './features/latn/latinLigatures.mjs';
 import thaiWordCheck from './features/thai/contextCheck/thaiWord.mjs';
 import thaiGlyphComposition from './features/thai/thaiGlyphComposition.mjs';
@@ -46,6 +47,7 @@ Bidi.prototype.setText = function (text) {
 Bidi.prototype.contextChecks = ({
     ccmpReplacementCheck,
     latinWordCheck,
+    ligatureSequenceCheck,
     arabicWordCheck,
     arabicSentenceCheck,
     thaiWordCheck,
@@ -69,6 +71,7 @@ function registerContextChecker(checkId) {
 function tokenizeText() {
     registerContextChecker.call(this, 'ccmpReplacement');
     registerContextChecker.call(this, 'latinWord');
+    registerContextChecker.call(this, 'ligatureSequence');
     registerContextChecker.call(this, 'arabicWord');
     registerContextChecker.call(this, 'arabicSentence');
     registerContextChecker.call(this, 'thaiWord');
@@ -202,6 +205,20 @@ function applyLatinLigatures() {
     }
 }
 
+/**
+ * Apply ligatures to non-Latin sequences
+ * This handles ligatures that contain non-Latin characters
+ */
+function applyLigatureSequences() {
+    if (!this.hasFeatureEnabled('latn', 'liga')) return;
+    checkGlyphIndexStatus.call(this);
+    const ranges = this.tokenizer.getContextRanges('ligatureSequence');
+    for(let i = 0; i < ranges.length; i++) {
+        const range = ranges[i];
+        latinLigature.call(this, range);
+    }
+}
+
 function applyUnicodeVariationSequences() {
     const ranges = this.tokenizer.getContextRanges('unicodeVariationSequence');
     for(let i = 0; i < ranges.length; i++) {
@@ -248,6 +265,9 @@ Bidi.prototype.applyFeaturesToContexts = function () {
     }
     if (this.checkContextReady('latinWord')) {
         applyLatinLigatures.call(this);
+    }
+    if (this.checkContextReady('ligatureSequence')) {
+        applyLigatureSequences.call(this);
     }
     if (this.checkContextReady('arabicSentence')) {
         reverseArabicSentences.call(this);
